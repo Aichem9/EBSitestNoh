@@ -24,7 +24,7 @@ from core import (
 
 
 st.set_page_config(
-    page_title="화학 바로채점",
+    page_title="화학2시간 탐구영역 바로채점",
     page_icon="⚗️",
     layout="wide",
     initial_sidebar_state="expanded",
