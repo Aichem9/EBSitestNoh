@@ -57,14 +57,14 @@ CLAUDE_MODEL = secret("CLAUDE_MODEL", "claude-sonnet-5")
 
 
 @st.cache_resource
-def database():
-    conn = connect(DB_PATH)
-    init_db(conn)
-    seed_exams(conn)
-    return conn
+def database_connection(db_path: str):
+    return connect(db_path)
 
 
-conn = database()
+conn = database_connection(DB_PATH)
+# 캐시된 연결을 재사용하더라도 코드가 새로 배포될 때마다 스키마를 점검합니다.
+init_db(conn)
+seed_exams(conn)
 
 
 def circled(number: int) -> str:
@@ -257,10 +257,10 @@ def csv_import_tab() -> None:
 
 
 def register_exam_tab() -> None:
-    st.write("과목과 문제 PDF를 선택하세요. Claude가 정답·해설을 만들며, 제공한 정답·해설 PDF가 있으면 그 내용을 우선합니다.")
+    st.write("과목을 선택하고 보유한 자료를 올리세요. 채점만 할 때는 정답 PDF만 있어도 됩니다.")
     selected_subject = st.selectbox("시험 과목", SUBJECTS, key="register_subject")
-    problem_pdf = st.file_uploader("문제 PDF (필수)", type=["pdf"], key="problem_pdf")
-    answer_pdf = st.file_uploader("정답 PDF (권장)", type=["pdf"], key="answer_pdf")
+    problem_pdf = st.file_uploader("문제 PDF (선택)", type=["pdf"], key="problem_pdf")
+    answer_pdf = st.file_uploader("정답 PDF (채점에 필요)", type=["pdf"], key="answer_pdf")
     explanation_pdf = st.file_uploader("해설 PDF (선택)", type=["pdf"], key="explanation_pdf")
     use_claude = st.checkbox(
         "Claude로 수식·표까지 분석",
@@ -271,11 +271,12 @@ def register_exam_tab() -> None:
     if not ANTHROPIC_API_KEY:
         st.caption("Claude 사용 안 함: ANTHROPIC_API_KEY가 서버에 설정되지 않았습니다.")
 
-    can_analyze = problem_pdf is not None and (use_claude or answer_pdf is not None)
+    has_pdf = any([problem_pdf, answer_pdf, explanation_pdf])
+    can_analyze = has_pdf and (use_claude or answer_pdf is not None)
     if st.button("PDF 분석", type="primary", disabled=not can_analyze):
         try:
             with st.spinner("PDF를 분석하고 있습니다..."):
-                problem_bytes = problem_pdf.getvalue()
+                problem_bytes = problem_pdf.getvalue() if problem_pdf else None
                 answer_bytes = answer_pdf.getvalue() if answer_pdf else None
                 explanation_bytes = explanation_pdf.getvalue() if explanation_pdf else None
                 total_size = sum(
@@ -297,9 +298,10 @@ def register_exam_tab() -> None:
                         raise ValueError("Claude API 키가 없을 때는 정답 PDF가 필요합니다.")
                     parsed = parse_exam_locally(answer_bytes, explanation_bytes)
                     parsed["subject"] = selected_subject
-                    parsed["title"] = Path(problem_pdf.name).stem
+                    source_name = problem_pdf.name if problem_pdf else answer_pdf.name
+                    parsed["title"] = Path(source_name).stem
                 parsed["problem_pdf"] = problem_bytes
-                parsed["problem_pdf_name"] = problem_pdf.name
+                parsed["problem_pdf_name"] = problem_pdf.name if problem_pdf else ""
                 st.session_state["parsed_exam"] = parsed
         except Exception as exc:
             st.error(f"분석하지 못했습니다: {exc}")

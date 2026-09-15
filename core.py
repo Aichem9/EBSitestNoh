@@ -16,9 +16,7 @@ CIRCLED = {"①": 1, "②": 2, "③": 3, "④": 4, "⑤": 5}
 
 SUBJECTS = [
     "물리학1",
-    "물리학2",
     "화학1",
-    "화학2",
     "생명과학1",
     "지구과학1",
     "생활과 윤리",
@@ -482,7 +480,7 @@ def _extract_json(text: str) -> dict[str, Any]:
 
 
 def parse_exam_with_claude(
-    problem_pdf: bytes,
+    problem_pdf: bytes | None,
     answer_pdf: bytes | None,
     explanation_pdf: bytes | None,
     api_key: str,
@@ -493,16 +491,22 @@ def parse_exam_with_claude(
 
     if not api_key:
         raise ValueError("ANTHROPIC_API_KEY가 설정되지 않았습니다.")
-    content: list[dict[str, Any]] = [
-        {
-            "type": "document",
-            "source": {
-                "type": "base64",
-                "media_type": "application/pdf",
-                "data": base64.standard_b64encode(problem_pdf).decode("ascii"),
-            },
-        }
-    ]
+    if not any([problem_pdf, answer_pdf, explanation_pdf]):
+        raise ValueError("분석할 PDF가 없습니다.")
+    content: list[dict[str, Any]] = []
+    document_map: list[str] = []
+    if problem_pdf:
+        content.append(
+            {
+                "type": "document",
+                "source": {
+                    "type": "base64",
+                    "media_type": "application/pdf",
+                    "data": base64.standard_b64encode(problem_pdf).decode("ascii"),
+                },
+            }
+        )
+        document_map.append(f"{len(document_map) + 1}번째 PDF는 학생이 풀 문제지")
     if answer_pdf:
         content.append(
             {
@@ -514,6 +518,7 @@ def parse_exam_with_claude(
                 },
             }
         )
+        document_map.append(f"{len(document_map) + 1}번째 PDF는 교사가 제공한 정답표")
     if explanation_pdf:
         content.append(
             {
@@ -525,10 +530,6 @@ def parse_exam_with_claude(
                 },
             }
         )
-    document_map = ["첫 번째 PDF는 학생이 풀 문제지"]
-    if answer_pdf:
-        document_map.append(f"{len(document_map) + 1}번째 PDF는 교사가 제공한 정답표")
-    if explanation_pdf:
         document_map.append(f"{len(document_map) + 1}번째 PDF는 교사가 제공한 해설")
     document_description = "; ".join(document_map)
     content.append(
@@ -539,6 +540,7 @@ def parse_exam_with_claude(
 제공된 정답표와 해설은 문제를 직접 푼 결과보다 우선하는 권위 있는 자료입니다.
 정답표가 없다면 문제를 직접 풀어 정답을 만들되, 불확실한 문항의 해설 앞에 '[교사 확인 필요]'를 붙이세요.
 해설 자료가 없다면 각 문항의 핵심 풀이를 한국어로 간결하게 작성하세요.
+문제지가 없고 해설 자료도 없다면 해설을 추측하지 말고 빈 문자열로 두세요.
 반드시 아래 구조의 JSON 하나만 출력하세요. 마크다운 코드 블록은 쓰지 마세요.
 {{
   "title": "시험명",
