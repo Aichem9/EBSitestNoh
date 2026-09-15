@@ -81,7 +81,7 @@ def exam_picker(active_only: bool, key: str):
 
 
 def student_page() -> None:
-    st.title("⚗️ 화학 바로채점")
+    st.title("⚗️ 화학2 시간 탐구영역 바로채점")
     st.caption("응시코드와 답안만 입력하면 즉시 채점됩니다. 이름은 저장하지 않습니다.")
     picked = exam_picker(active_only=True, key="student_exam")
     if not picked:
