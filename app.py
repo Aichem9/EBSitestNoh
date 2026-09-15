@@ -8,7 +8,6 @@ import pandas as pd
 import streamlit as st
 
 from core import (
-    SUBJECTS,
     connect,
     create_submission,
     exam_analytics,
@@ -25,8 +24,8 @@ from core import (
 
 
 st.set_page_config(
-    page_title="선택 과목 바로채점",
-    page_icon="📝",
+    page_title="화학 바로채점",
+    page_icon="⚗️",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -76,33 +75,19 @@ def exam_picker(active_only: bool, key: str):
     if not exams:
         st.info("등록된 시험이 없습니다.")
         return None
-    available_subjects = [subject for subject in SUBJECTS if any(e["subject"] == subject for e in exams)]
-    other_subjects = sorted({e["subject"] for e in exams} - set(available_subjects))
-    subject = st.selectbox("과목 선택", available_subjects + other_subjects, key=f"{key}_subject")
-    exams = [exam for exam in exams if exam["subject"] == subject]
     by_title = {exam["title"]: exam for exam in exams}
     title = st.selectbox("시험 선택", list(by_title), key=key)
     return by_title[title]
 
 
 def student_page() -> None:
-    st.title("📝 선택 과목 바로채점")
+    st.title("⚗️ 화학 바로채점")
     st.caption("응시코드와 답안만 입력하면 즉시 채점됩니다. 이름은 저장하지 않습니다.")
     picked = exam_picker(active_only=True, key="student_exam")
     if not picked:
         return
     exam = get_exam(conn, picked["id"])
     st.info(f"{exam['subject']} · {exam['unit_name']} · 총 {len(exam['questions'])}문항")
-    if exam.get("problem_pdf"):
-        st.download_button(
-            "📄 문제 PDF 열기·다운로드",
-            data=exam["problem_pdf"],
-            file_name=exam.get("problem_pdf_name") or f"{exam['title']}.pdf",
-            mime="application/pdf",
-            width="stretch",
-        )
-    else:
-        st.caption("이 시험에는 문제 PDF가 등록되지 않았습니다. 교사가 배부한 문제지를 이용하세요.")
 
     with st.form("student_answers", clear_on_submit=False):
         left, right = st.columns(2)
@@ -215,13 +200,10 @@ def analytics_tab() -> None:
         width="stretch",
     )
     st.subheader("학생별 결과")
-    export_frame = analytics["students"].copy()
-    export_frame.insert(0, "시험", picked["title"])
-    export_frame.insert(0, "과목", picked["subject"])
-    st.dataframe(export_frame, hide_index=True, width="stretch")
+    st.dataframe(analytics["students"], hide_index=True, width="stretch")
     st.download_button(
         "학생별 결과 CSV 다운로드",
-        export_frame.to_csv(index=False).encode("utf-8-sig"),
+        analytics["students"].to_csv(index=False).encode("utf-8-sig"),
         file_name=f"{picked['title']}_결과.csv",
         mime="text/csv",
     )
@@ -257,49 +239,32 @@ def csv_import_tab() -> None:
 
 
 def register_exam_tab() -> None:
-    st.write("과목과 문제 PDF를 선택하세요. Claude가 정답·해설을 만들며, 제공한 정답·해설 PDF가 있으면 그 내용을 우선합니다.")
-    selected_subject = st.selectbox("시험 과목", SUBJECTS, key="register_subject")
-    problem_pdf = st.file_uploader("문제 PDF (필수)", type=["pdf"], key="problem_pdf")
-    answer_pdf = st.file_uploader("정답 PDF (권장)", type=["pdf"], key="answer_pdf")
+    st.write("정답 PDF와 해설 PDF를 올리면 문항별 정보를 추출합니다. 저장 전에 반드시 검토하세요.")
+    answer_pdf = st.file_uploader("정답 PDF (필수)", type=["pdf"], key="answer_pdf")
     explanation_pdf = st.file_uploader("해설 PDF (선택)", type=["pdf"], key="explanation_pdf")
     use_claude = st.checkbox(
         "Claude로 수식·표까지 분석",
         value=bool(ANTHROPIC_API_KEY),
         disabled=not bool(ANTHROPIC_API_KEY),
-        help="정답 PDF가 없으면 Claude가 문제를 직접 풉니다. 저장 전에 반드시 교사가 검토하세요.",
+        help="API 키가 없으면 PDF 텍스트에서 정답과 해설을 추출합니다.",
     )
     if not ANTHROPIC_API_KEY:
         st.caption("Claude 사용 안 함: ANTHROPIC_API_KEY가 서버에 설정되지 않았습니다.")
 
-    can_analyze = problem_pdf is not None and (use_claude or answer_pdf is not None)
-    if st.button("PDF 분석", type="primary", disabled=not can_analyze):
+    if st.button("PDF 분석", type="primary", disabled=answer_pdf is None):
         try:
             with st.spinner("PDF를 분석하고 있습니다..."):
-                problem_bytes = problem_pdf.getvalue()
-                answer_bytes = answer_pdf.getvalue() if answer_pdf else None
+                answer_bytes = answer_pdf.getvalue()
                 explanation_bytes = explanation_pdf.getvalue() if explanation_pdf else None
-                total_size = sum(
-                    len(data) for data in [problem_bytes, answer_bytes, explanation_bytes] if data
-                )
-                if total_size > 32 * 1024 * 1024:
-                    raise ValueError("PDF 전체 용량이 32MB를 넘습니다. 파일을 압축하거나 나누어 주세요.")
                 if use_claude:
                     parsed = parse_exam_with_claude(
-                        problem_bytes,
                         answer_bytes,
                         explanation_bytes,
                         ANTHROPIC_API_KEY,
-                        selected_subject,
                         CLAUDE_MODEL,
                     )
                 else:
-                    if answer_bytes is None:
-                        raise ValueError("Claude API 키가 없을 때는 정답 PDF가 필요합니다.")
                     parsed = parse_exam_locally(answer_bytes, explanation_bytes)
-                    parsed["subject"] = selected_subject
-                    parsed["title"] = Path(problem_pdf.name).stem
-                parsed["problem_pdf"] = problem_bytes
-                parsed["problem_pdf_name"] = problem_pdf.name
                 st.session_state["parsed_exam"] = parsed
         except Exception as exc:
             st.error(f"분석하지 못했습니다: {exc}")
@@ -311,12 +276,7 @@ def register_exam_tab() -> None:
     st.subheader("추출 결과 검토")
     title = st.text_input("시험명", value=parsed["title"], key="parsed_title")
     left, right = st.columns(2)
-    subject = left.selectbox(
-        "과목",
-        SUBJECTS,
-        index=SUBJECTS.index(parsed["subject"]) if parsed["subject"] in SUBJECTS else 0,
-        key="parsed_subject",
-    )
+    subject = left.text_input("과목", value=parsed["subject"], key="parsed_subject")
     unit = right.text_input("단원", value=parsed["unit"], key="parsed_unit")
     frame = pd.DataFrame(parsed["questions"])
     frame.columns = ["문항", "정답", "해설"]
@@ -339,8 +299,6 @@ def register_exam_tab() -> None:
         "연습 모드": "unlimited",
     }
     policy_label = st.selectbox("재응시 정책", list(policy_labels))
-    publish_now = st.checkbox("저장 후 학생에게 바로 공개", value=True)
-    st.warning("Claude가 문제만 보고 만든 정답은 반드시 원문과 대조해 확인한 뒤 공개하세요.")
     if st.button("검토한 시험 저장", type="primary"):
         try:
             questions = [
@@ -358,9 +316,6 @@ def register_exam_tab() -> None:
                 unit_name=unit,
                 questions=questions,
                 retake_policy=policy_labels[policy_label],
-                active=publish_now,
-                problem_pdf=parsed.get("problem_pdf"),
-                problem_pdf_name=parsed.get("problem_pdf_name", ""),
             )
             st.session_state.pop("parsed_exam", None)
             st.success("시험을 저장했습니다.")
