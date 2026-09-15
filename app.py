@@ -25,7 +25,7 @@ from core import (
 
 
 st.set_page_config(
-    page_title="선택 과목 바로채점",
+    page_title="EBSi 기출 문항 pdf 기반 선택 과목 바로채점",
     page_icon="📝",
     layout="wide",
     initial_sidebar_state="expanded",
