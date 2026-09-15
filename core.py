@@ -14,20 +14,19 @@ from pypdf import PdfReader
 
 CIRCLED = {"①": 1, "②": 2, "③": 3, "④": 4, "⑤": 5}
 
-SEED_EXAMS = [
-    {
-        "title": "15개정 화학1 - 몰과 화학 반응식 기출 #1",
-        "subject": "화학Ⅰ",
-        "unit": "몰과 화학 반응식",
-        "answers": [1, 4, 2, 5, 2, 5, 2, 2, 2, 5],
-    },
-    {
-        "title": "15개정 화학2 - 반응 속도 기출 #1",
-        "subject": "화학Ⅱ",
-        "unit": "반응 속도",
-        "answers": [4, 2, 1, 3, 1, 3, 5, 5, 3, 5],
-    },
+SUBJECTS = [
+    "물리학1",
+    "화학1",
+    "생명과학1",
+    "지구과학1",
+    "생활과 윤리",
+    "사회문화",
+    "한국지리",
+    "윤리와 사상",
 ]
+
+# 새 설치에서는 교사가 검토한 시험만 학생에게 공개합니다.
+SEED_EXAMS: list[dict[str, Any]] = []
 
 
 def connect(db_path: str | Path) -> sqlite3.Connection:
@@ -50,6 +49,8 @@ def init_db(conn: sqlite3.Connection) -> None:
             unit_name TEXT NOT NULL DEFAULT '',
             active INTEGER NOT NULL DEFAULT 1,
             retake_policy TEXT NOT NULL DEFAULT 'latest',
+            problem_pdf BLOB,
+            problem_pdf_name TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL
         );
 
@@ -87,6 +88,11 @@ def init_db(conn: sqlite3.Connection) -> None:
             ON submissions(exam_id, class_name, student_code);
         """
     )
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(exams)")}
+    if "problem_pdf" not in columns:
+        conn.execute("ALTER TABLE exams ADD COLUMN problem_pdf BLOB")
+    if "problem_pdf_name" not in columns:
+        conn.execute("ALTER TABLE exams ADD COLUMN problem_pdf_name TEXT NOT NULL DEFAULT ''")
     conn.commit()
 
 
@@ -123,6 +129,8 @@ def save_exam(
     questions: Iterable[dict[str, Any]],
     retake_policy: str = "latest",
     active: bool = True,
+    problem_pdf: bytes | None = None,
+    problem_pdf_name: str = "",
 ) -> int:
     clean_questions = sorted(list(questions), key=lambda q: int(q["number"]))
     if not title.strip():
@@ -140,8 +148,10 @@ def save_exam(
     with conn:
         cursor = conn.execute(
             """
-            INSERT INTO exams(title, subject, unit_name, active, retake_policy, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO exams(
+                title, subject, unit_name, active, retake_policy,
+                problem_pdf, problem_pdf_name, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 title.strip(),
@@ -149,6 +159,8 @@ def save_exam(
                 unit_name.strip(),
                 int(active),
                 retake_policy,
+                problem_pdf,
+                problem_pdf_name.strip(),
                 utc_now(),
             ),
         )
@@ -175,7 +187,9 @@ def list_exams(conn: sqlite3.Connection, active_only: bool = False) -> list[dict
     where = "WHERE e.active = 1" if active_only else ""
     rows = conn.execute(
         f"""
-        SELECT e.*, COUNT(q.id) AS question_count
+        SELECT e.id, e.title, e.subject, e.unit_name, e.active,
+               e.retake_policy, e.problem_pdf_name, e.created_at,
+               COUNT(q.id) AS question_count
         FROM exams e
         LEFT JOIN questions q ON q.exam_id = e.id
         {where}
@@ -466,9 +480,11 @@ def _extract_json(text: str) -> dict[str, Any]:
 
 
 def parse_exam_with_claude(
-    answer_pdf: bytes,
+    problem_pdf: bytes,
+    answer_pdf: bytes | None,
     explanation_pdf: bytes | None,
     api_key: str,
+    subject: str,
     model: str = "claude-sonnet-5",
 ) -> dict[str, Any]:
     import anthropic
@@ -481,10 +497,21 @@ def parse_exam_with_claude(
             "source": {
                 "type": "base64",
                 "media_type": "application/pdf",
-                "data": base64.standard_b64encode(answer_pdf).decode("ascii"),
+                "data": base64.standard_b64encode(problem_pdf).decode("ascii"),
             },
         }
     ]
+    if answer_pdf:
+        content.append(
+            {
+                "type": "document",
+                "source": {
+                    "type": "base64",
+                    "media_type": "application/pdf",
+                    "data": base64.standard_b64encode(answer_pdf).decode("ascii"),
+                },
+            }
+        )
     if explanation_pdf:
         content.append(
             {
@@ -496,21 +523,29 @@ def parse_exam_with_claude(
                 },
             }
         )
+    document_map = ["첫 번째 PDF는 학생이 풀 문제지"]
+    if answer_pdf:
+        document_map.append(f"{len(document_map) + 1}번째 PDF는 교사가 제공한 정답표")
+    if explanation_pdf:
+        document_map.append(f"{len(document_map) + 1}번째 PDF는 교사가 제공한 해설")
+    document_description = "; ".join(document_map)
     content.append(
         {
             "type": "text",
-            "text": """
-첫 번째 PDF는 객관식 정답표이고, 두 번째 PDF가 있다면 문항별 해설입니다.
-한국어 화학 시험 정보를 정확하게 추출하세요. 보이는 내용만 사용하고 추측하지 마세요.
+            "text": f"""
+과목은 '{subject}'입니다. 자료 구성은 다음과 같습니다: {document_description}.
+제공된 정답표와 해설은 문제를 직접 푼 결과보다 우선하는 권위 있는 자료입니다.
+정답표가 없다면 문제를 직접 풀어 정답을 만들되, 불확실한 문항의 해설 앞에 '[교사 확인 필요]'를 붙이세요.
+해설 자료가 없다면 각 문항의 핵심 풀이를 한국어로 간결하게 작성하세요.
 반드시 아래 구조의 JSON 하나만 출력하세요. 마크다운 코드 블록은 쓰지 마세요.
-{
+{{
   "title": "시험명",
-  "subject": "화학Ⅰ 또는 화학Ⅱ",
+  "subject": "{subject}",
   "unit": "단원명",
   "questions": [
-    {"number": 1, "correct_answer": 1, "explanation": "1번 해설"}
+    {{"number": 1, "correct_answer": 1, "explanation": "1번 해설"}}
   ]
-}
+}}
 correct_answer는 반드시 1~5의 정수여야 하며, 문항 번호는 1부터 연속되어야 합니다.
 수식은 가능한 한 읽기 쉬운 일반 텍스트로 보존하세요.
 """.strip(),
@@ -543,7 +578,7 @@ correct_answer는 반드시 1~5의 정수여야 하며, 문항 번호는 1부터
         raise ValueError("Claude가 1~5 범위를 벗어난 정답을 반환했습니다.")
     return {
         "title": str(parsed.get("title", "새 시험")).strip(),
-        "subject": str(parsed.get("subject", "화학")).strip(),
+        "subject": subject,
         "unit": str(parsed.get("unit", "")).strip(),
         "questions": normalized,
     }
