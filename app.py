@@ -87,7 +87,7 @@ def exam_picker(active_only: bool, key: str):
 
 def student_page() -> None:
     st.title("📝 EBSi 기출 문항 pdf 기반 선택 과목 바로채점")
-    st.caption("응시코드와 답안만 입력하면 즉시 채점됩니다. 이름은 저장하지 않습니다.")
+    st.caption("선생님이 만들어주신 시험만 응시 가능하며, 응시코드와 답안만 입력하면 즉시 채점됩니다. 이름은 저장하지 않습니다.")
     picked = exam_picker(active_only=True, key="student_exam")
     if not picked:
         return
